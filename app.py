@@ -11,10 +11,8 @@ st.set_page_config(
     layout="wide"
 )
 
-# This block injects custom CSS to make the app look better
 st.markdown("""
     <style>
-    /* Center the Main Title */
     h1 {
         text-align: center;
         background: -webkit-linear-gradient(45deg, #FF4B4B, #FF9068);
@@ -22,8 +20,6 @@ st.markdown("""
         -webkit-text-fill-color: transparent;
         padding-bottom: 20px;
     }
-    
-    /* Style the Optimize Button */
     div.stButton > button {
         width: 100%;
         background: linear-gradient(90deg, #FF4B4B 0%, #FF9068 100%);
@@ -38,25 +34,54 @@ st.markdown("""
         transform: scale(1.02);
         box-shadow: 0 4px 15px rgba(255, 75, 75, 0.4);
     }
-    
-    /* Info Box Styling */
-    .stAlert {
-        border-radius: 10px;
-    }
+    .stAlert { border-radius: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
-# --- 2. Camelot Logic & Helpers ---
+# --- 2. Camelot Logic & Translation ---
 CAMELOT_ORDER = [
     "1A", "1B", "2A", "2B", "3A", "3B", "4A", "4B",
     "5A", "5B", "6A", "6B", "7A", "7B", "8A", "8B",
     "9A", "9B", "10A", "10B", "11A", "11B", "12A", "12B"
 ]
 
+# Translator: Musical Key -> Camelot Key
+KEY_MAPPING = {
+    # Major (B -> 1B, F# -> 2B...)
+    "B": "1B", "F#": "2B", "Gb": "2B", "Db": "3B", "C#": "3B",
+    "Ab": "4B", "Eb": "5B", "Bb": "6B", "F": "7B", "C": "8B",
+    "G": "9B", "D": "10B", "A": "11B", "E": "12B",
+    
+    # Minor (Abm -> 1A, Ebm -> 2A...)
+    "Abm": "1A", "G#m": "1A", "Ebm": "2A", "D#m": "2A",
+    "Bbm": "3A", "A#m": "3A", "Fm": "4A", "Cm": "5A",
+    "Gm": "6A", "Dm": "7A", "Am": "8A", "Em": "9A",
+    "Bm": "10A", "F#m": "11A", "Gbm": "11A", "C#m": "12A", "Dbm": "12A"
+}
+
+def standardize_key(key_val):
+    """Converts various key formats (Am, 8A, 08A) to standard Camelot (8A)."""
+    if not isinstance(key_val, str):
+        return None
+    
+    k = key_val.strip()
+    
+    # 1. If already standard Camelot (e.g. "8A")
+    if k in CAMELOT_ORDER:
+        return k
+        
+    # 2. Try Dictionary Mapping (e.g. "Am" -> "8A")
+    if k in KEY_MAPPING:
+        return KEY_MAPPING[k]
+        
+    # 3. Handle Leading Zeros (e.g. "08A" -> "8A")
+    if k.startswith("0") and k[1:] in CAMELOT_ORDER:
+        return k[1:]
+        
+    return None
+
 def get_camelot_distance(key1, key2):
-    """Calculates the harmonic distance on the Camelot Wheel."""
-    if not key1 or not key2 or key1 not in CAMELOT_ORDER or key2 not in CAMELOT_ORDER:
-        return 100
+    if not key1 or not key2: return 100
     
     idx1 = CAMELOT_ORDER.index(key1)
     idx2 = CAMELOT_ORDER.index(key2)
@@ -64,20 +89,27 @@ def get_camelot_distance(key1, key2):
     num1, let1 = key1[:-1], key1[-1]
     num2, let2 = key2[:-1], key2[-1]
     
-    if num1 == num2 and let1 != let2:
-        return 1
-        
+    if num1 == num2 and let1 != let2: return 1 # Major/Minor Mix
+    
     diff = abs(idx1 - idx2)
-    if diff > 12:
-        diff = 24 - diff
+    if diff > 12: diff = 24 - diff
     return diff
 
 def parse_uploaded_file(uploaded_file):
-    """Parses TXT, CSV, or XML from Rekordbox."""
     try:
         # Case 1: TXT / CSV
         if uploaded_file.name.endswith('.txt') or uploaded_file.name.endswith('.csv'):
-            df = pd.read_csv(uploaded_file, sep='\t', encoding='utf-16le')
+            # Try parsing with tab delimiter first (Rekordbox TXT)
+            try:
+                df = pd.read_csv(uploaded_file, sep='\t', encoding='utf-16le')
+                if 'Key' not in df.columns and len(df.columns) <= 1:
+                    # If failed, try comma
+                    uploaded_file.seek(0)
+                    df = pd.read_csv(uploaded_file)
+            except:
+                uploaded_file.seek(0)
+                df = pd.read_csv(uploaded_file)
+
             df.columns = [c.strip() for c in df.columns]
             return df
         
@@ -87,8 +119,7 @@ def parse_uploaded_file(uploaded_file):
             root = tree.getroot()
             tracks = []
             collection = root.find('COLLECTION')
-            if collection is None:
-                return pd.DataFrame()
+            if collection is None: return pd.DataFrame()
                 
             for track in collection.findall('TRACK'):
                 tracks.append({
@@ -106,24 +137,30 @@ def parse_uploaded_file(uploaded_file):
 
 # --- 3. The Algorithm ---
 def optimize_playlist(df, energy_mode="Ramp Up (Low -> High)"):
+    # Cleanup columns
     df.columns = [c.strip() for c in df.columns]
     
-    if 'BPM' in df.columns:
-        df['BPM'] = pd.to_numeric(df['BPM'], errors='coerce')
-    
+    # 1. Standardize Keys (The Fix!)
     if 'Key' not in df.columns:
-        st.error("Column 'Key' not found. Ensure your export includes Key/Tonality info.")
+        st.error("Column 'Key' not found.")
         return df
-
-    valid_df = df[df['Key'].isin(CAMELOT_ORDER)].copy()
-    invalid_df = df[~df['Key'].isin(CAMELOT_ORDER)].copy()
+        
+    # Create a new column for processing, preserving original 'Key' for display if needed
+    df['Camelot_Key'] = df['Key'].apply(standardize_key)
+    
+    # Filter valid
+    valid_df = df[df['Camelot_Key'].notna()].copy()
+    invalid_df = df[df['Camelot_Key'].isna()].copy()
     
     if valid_df.empty:
+        st.warning("No valid keys found. Check if your file has Key/Tonality info.")
         return df
 
-    groups = valid_df.groupby('Key')
-    unique_keys = valid_df['Key'].unique().tolist()
+    # Group by Camelot Key
+    groups = valid_df.groupby('Camelot_Key')
+    unique_keys = valid_df['Camelot_Key'].unique().tolist()
     
+    # Pathfinding
     sorted_keys = [unique_keys[0]]
     unique_keys.remove(unique_keys[0])
     
@@ -133,10 +170,17 @@ def optimize_playlist(df, energy_mode="Ramp Up (Low -> High)"):
         sorted_keys.append(best_next_key)
         unique_keys.remove(best_next_key)
         
+    # Construct Final List
     final_playlist = []
     
     for key in sorted_keys:
         key_group = groups.get_group(key)
+        
+        # Convert BPM to numeric for sorting
+        if 'BPM' in key_group.columns:
+            key_group['BPM'] = pd.to_numeric(key_group['BPM'], errors='coerce')
+            
+        # Sort by BPM
         if energy_mode == "Ramp Up (Low -> High)":
             key_group = key_group.sort_values(by='BPM', ascending=True)
         elif energy_mode == "Ramp Down (High -> Low)":
@@ -147,13 +191,16 @@ def optimize_playlist(df, energy_mode="Ramp Up (Low -> High)"):
     if not invalid_df.empty:
         final_playlist.append(invalid_df)
         
-    return pd.concat(final_playlist)
+    result = pd.concat(final_playlist)
+    
+    # Cleanup: remove the temporary column
+    result = result.drop(columns=['Camelot_Key'])
+    return result
 
 # --- 4. Main UI ---
 def main():
     st.title("Harmonic Flow Optimizer")
     
-    # Updated Description with Camelot Credit
     st.markdown("""
     <div style='text-align: center; color: #888; margin-bottom: 20px;'>
     Instantly transform your raw playlist into a seamless harmonic journey.<br>
@@ -161,10 +208,9 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Layout: Sidebar + Main Area
     with st.sidebar:
         st.header("⚙️ Settings")
-        st.info("Supports **XML** and **TXT** exports directly from Rekordbox.")
+        st.info("Supports **XML**, **TXT** and **CSV**.")
         
         energy_option = st.select_slider(
             "Energy Flow Strategy",
@@ -172,9 +218,8 @@ def main():
             value="Ramp Up (Low -> High)"
         )
     
-    # File Uploader Container
     with st.container():
-        uploaded_file = st.file_uploader("Upload Playlist (XML / TXT / CSV)", type=['xml', 'txt', 'csv'])
+        uploaded_file = st.file_uploader("Upload Playlist", type=['xml', 'txt', 'csv'])
     
     if uploaded_file:
         df = parse_uploaded_file(uploaded_file)
@@ -185,9 +230,8 @@ def main():
             with st.expander("📂 Preview Original Playlist"):
                 st.dataframe(df.head(), use_container_width=True)
                 
-            # The Magic Button (Styled via CSS above)
             if st.button("🚀 Optimize Magic"):
-                with st.spinner("Analyzing harmonic paths..."):
+                with st.spinner("Translating keys & Calculating harmonic paths..."):
                     optimized_df = optimize_playlist(df, energy_mode=energy_option)
                     
                     st.divider()
@@ -197,10 +241,10 @@ def main():
                     col1, col2, col3 = st.columns(3)
                     col1.metric("Total Tracks", len(optimized_df))
                     
-                    start_bpm = optimized_df.iloc[0]['BPM'] if 'BPM' in optimized_df.columns and not optimized_df.empty else "N/A"
+                    start_bpm = optimized_df.iloc[0]['BPM'] if 'BPM' in optimized_df.columns else "N/A"
                     col2.metric("Start BPM", f"{start_bpm}")
                     
-                    start_key = optimized_df.iloc[0]['Key'] if 'Key' in optimized_df.columns and not optimized_df.empty else "N/A"
+                    start_key = optimized_df.iloc[0]['Key'] if 'Key' in optimized_df.columns else "N/A"
                     col3.metric("Start Key", f"{start_key}")
                     
                     # Result Table
@@ -209,7 +253,7 @@ def main():
                     
                     st.dataframe(optimized_df[display_cols].reset_index(drop=True), use_container_width=True)
                     
-                    # Download Button
+                    # Download
                     csv = optimized_df.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label="📥 Download Sorted CSV",
