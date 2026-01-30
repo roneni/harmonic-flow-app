@@ -4,12 +4,47 @@ import numpy as np
 import io
 import xml.etree.ElementTree as ET
 
-# --- 1. Page Configuration ---
+# --- 1. Page Configuration & Custom CSS ---
 st.set_page_config(
     page_title="Harmonic Flow Optimizer",
     page_icon="🎵",
     layout="wide"
 )
+
+# This block injects custom CSS to make the app look better
+st.markdown("""
+    <style>
+    /* Center the Main Title */
+    h1 {
+        text-align: center;
+        background: -webkit-linear-gradient(45deg, #FF4B4B, #FF9068);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        padding-bottom: 20px;
+    }
+    
+    /* Style the Optimize Button */
+    div.stButton > button {
+        width: 100%;
+        background: linear-gradient(90deg, #FF4B4B 0%, #FF9068 100%);
+        color: white;
+        font-weight: bold;
+        border: none;
+        padding: 10px 24px;
+        border-radius: 8px;
+        transition: all 0.3s ease;
+    }
+    div.stButton > button:hover {
+        transform: scale(1.02);
+        box-shadow: 0 4px 15px rgba(255, 75, 75, 0.4);
+    }
+    
+    /* Info Box Styling */
+    .stAlert {
+        border-radius: 10px;
+    }
+    </style>
+""", unsafe_allow_html=True)
 
 # --- 2. Camelot Logic & Helpers ---
 CAMELOT_ORDER = [
@@ -40,33 +75,28 @@ def get_camelot_distance(key1, key2):
 def parse_uploaded_file(uploaded_file):
     """Parses TXT, CSV, or XML from Rekordbox."""
     try:
-        # Case 1: TXT / CSV (Tab Separated)
+        # Case 1: TXT / CSV
         if uploaded_file.name.endswith('.txt') or uploaded_file.name.endswith('.csv'):
             df = pd.read_csv(uploaded_file, sep='\t', encoding='utf-16le')
-            # Normalize columns just in case
             df.columns = [c.strip() for c in df.columns]
             return df
         
-        # Case 2: XML (Rekordbox Standard Export)
+        # Case 2: XML
         elif uploaded_file.name.endswith('.xml'):
             tree = ET.parse(uploaded_file)
             root = tree.getroot()
-            
-            # Rekordbox XML structure: COLLECTION -> TRACK
             tracks = []
             collection = root.find('COLLECTION')
             if collection is None:
-                return pd.DataFrame() # Empty if invalid XML
+                return pd.DataFrame()
                 
             for track in collection.findall('TRACK'):
-                # Extract attributes
                 tracks.append({
                     'Artist': track.get('Artist'),
                     'Track Title': track.get('Name'),
                     'BPM': track.get('AverageBpm'),
                     'Key': track.get('Tonality')
                 })
-            
             return pd.DataFrame(tracks)
             
         return pd.DataFrame()
@@ -76,31 +106,24 @@ def parse_uploaded_file(uploaded_file):
 
 # --- 3. The Algorithm ---
 def optimize_playlist(df, energy_mode="Ramp Up (Low -> High)"):
-    # Clean Data & Standardize Column Names
-    # If XML was used, columns are already perfect. If TXT, they might need strip.
     df.columns = [c.strip() for c in df.columns]
     
-    # Ensure BPM is numeric
     if 'BPM' in df.columns:
         df['BPM'] = pd.to_numeric(df['BPM'], errors='coerce')
     
-    # Check for essential columns
     if 'Key' not in df.columns:
         st.error("Column 'Key' not found. Ensure your export includes Key/Tonality info.")
         return df
 
-    # Filter valid keys
     valid_df = df[df['Key'].isin(CAMELOT_ORDER)].copy()
     invalid_df = df[~df['Key'].isin(CAMELOT_ORDER)].copy()
     
-    # Group & Sort Keys
     if valid_df.empty:
         return df
 
     groups = valid_df.groupby('Key')
     unique_keys = valid_df['Key'].unique().tolist()
     
-    # Pathfinding (Greedy / Nearest Neighbor)
     sorted_keys = [unique_keys[0]]
     unique_keys.remove(unique_keys[0])
     
@@ -110,18 +133,14 @@ def optimize_playlist(df, energy_mode="Ramp Up (Low -> High)"):
         sorted_keys.append(best_next_key)
         unique_keys.remove(best_next_key)
         
-    # Build Final Playlist
     final_playlist = []
     
     for key in sorted_keys:
         key_group = groups.get_group(key)
-        
-        # Internal Sort by BPM
         if energy_mode == "Ramp Up (Low -> High)":
             key_group = key_group.sort_values(by='BPM', ascending=True)
         elif energy_mode == "Ramp Down (High -> Low)":
             key_group = key_group.sort_values(by='BPM', ascending=False)
-        # Wave mode leaves as is (or could be random)
              
         final_playlist.append(key_group)
         
@@ -132,16 +151,19 @@ def optimize_playlist(df, energy_mode="Ramp Up (Low -> High)"):
 
 # --- 4. Main UI ---
 def main():
-    st.title("🎵 Harmonic Flow Optimizer")
+    st.title("Harmonic Flow Optimizer")
     
-    # Marketing & Time-Saving Text
+    # Updated Description with Camelot Credit
     st.markdown("""
-    **Save hours of prep time.** Instantly transform your raw playlist into a seamless harmonic journey. 
-    This tool reorders your tracks to ensure perfect key compatibility and controlled energy flow—so you can focus on the mix, not the math.
-    """)
+    <div style='text-align: center; color: #888; margin-bottom: 20px;'>
+    Instantly transform your raw playlist into a seamless harmonic journey.<br>
+    Powered by the <b>Camelot Wheel</b> system for perfect key mixing.
+    </div>
+    """, unsafe_allow_html=True)
     
+    # Layout: Sidebar + Main Area
     with st.sidebar:
-        st.header("Settings")
+        st.header("⚙️ Settings")
         st.info("Supports **XML** and **TXT** exports directly from Rekordbox.")
         
         energy_option = st.select_slider(
@@ -150,7 +172,9 @@ def main():
             value="Ramp Up (Low -> High)"
         )
     
-    uploaded_file = st.file_uploader("Upload Playlist (XML / TXT / CSV)", type=['xml', 'txt', 'csv'])
+    # File Uploader Container
+    with st.container():
+        uploaded_file = st.file_uploader("Upload Playlist (XML / TXT / CSV)", type=['xml', 'txt', 'csv'])
     
     if uploaded_file:
         df = parse_uploaded_file(uploaded_file)
@@ -158,30 +182,34 @@ def main():
         if not df.empty:
             st.success(f"Loaded {len(df)} tracks successfully!")
             
-            with st.expander("Original Playlist Preview"):
-                st.dataframe(df.head())
+            with st.expander("📂 Preview Original Playlist"):
+                st.dataframe(df.head(), use_container_width=True)
                 
+            # The Magic Button (Styled via CSS above)
             if st.button("🚀 Optimize Magic"):
-                with st.spinner("Analyzing harmony & BPM..."):
+                with st.spinner("Analyzing harmonic paths..."):
                     optimized_df = optimize_playlist(df, energy_mode=energy_option)
                     
                     st.divider()
-                    st.subheader("✅ Optimized Result")
+                    st.markdown("<h3 style='text-align: center;'>✅ Optimized Result</h3>", unsafe_allow_html=True)
                     
-                    col1, col2 = st.columns(2)
-                    col1.metric("Tracks", len(optimized_df))
-                    # Safe check for BPM display
+                    # Metrics
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Total Tracks", len(optimized_df))
+                    
                     start_bpm = optimized_df.iloc[0]['BPM'] if 'BPM' in optimized_df.columns and not optimized_df.empty else "N/A"
-                    col1.metric("Start BPM", f"{start_bpm}")
+                    col2.metric("Start BPM", f"{start_bpm}")
                     
-                    # Show result
+                    start_key = optimized_df.iloc[0]['Key'] if 'Key' in optimized_df.columns and not optimized_df.empty else "N/A"
+                    col3.metric("Start Key", f"{start_key}")
+                    
+                    # Result Table
                     display_cols = ['Artist', 'Track Title', 'Key', 'BPM']
-                    # Only show columns that actually exist
                     display_cols = [c for c in display_cols if c in optimized_df.columns]
                     
                     st.dataframe(optimized_df[display_cols].reset_index(drop=True), use_container_width=True)
                     
-                    # Download
+                    # Download Button
                     csv = optimized_df.to_csv(index=False).encode('utf-8')
                     st.download_button(
                         label="📥 Download Sorted CSV",
