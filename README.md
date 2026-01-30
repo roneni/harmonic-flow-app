@@ -31,3 +31,12 @@ pip install -r requirements.txt
 
 # 3. Run the app
 streamlit run app.py
+The Tech Stack
+Python 3.13
+
+Streamlit (Frontend)
+
+Pandas (Data processing)
+
+Beam Search / Cluster Optimization (Logic)
+Created by Ronen 
