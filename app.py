@@ -11,30 +11,89 @@ st.set_page_config(
     layout="wide"
 )
 
+# --- CUSTOM CSS (DARK MODE / PSYTRANCE) ---
 st.markdown("""
     <style>
+    /* Import Google Fonts */
+    @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700&family=Roboto:wght@300;400&display=swap');
+
+    /* General App Background */
+    .stApp {
+        background: linear-gradient(135deg, #0f0c29 0%, #302b63 50%, #24243e 100%);
+        color: #ffffff;
+        font-family: 'Roboto', sans-serif;
+    }
+
+    /* Titles */
     h1 {
-        text-align: center;
-        background: -webkit-linear-gradient(45deg, #FF4B4B, #FF9068);
+        font-family: 'Orbitron', sans-serif !important;
+        background: -webkit-linear-gradient(45deg, #00d2ff, #3a7bd5);
         -webkit-background-clip: text;
         -webkit-text-fill-color: transparent;
+        text-align: center;
         padding-bottom: 20px;
+        text-shadow: 0px 0px 20px rgba(0, 210, 255, 0.3);
     }
+    
+    h2, h3 {
+        font-family: 'Orbitron', sans-serif !important;
+        color: #e0e0e0 !important;
+    }
+
+    /* Hide Streamlit Default Elements */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+
+    /* Sidebar Styling */
+    section[data-testid="stSidebar"] {
+        background-color: rgba(0, 0, 0, 0.2);
+        border-right: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    /* Buttons */
     div.stButton > button {
         width: 100%;
-        background: linear-gradient(90deg, #FF4B4B 0%, #FF9068 100%);
+        background: linear-gradient(90deg, #00d2ff 0%, #3a7bd5 100%);
         color: white;
-        font-weight: bold;
         border: none;
-        padding: 10px 24px;
         border-radius: 8px;
+        padding: 15px 30px;
+        font-size: 18px;
+        font-weight: bold;
+        font-family: 'Orbitron', sans-serif;
+        text-transform: uppercase;
+        letter-spacing: 1.5px;
         transition: all 0.3s ease;
+        box-shadow: 0 0 15px rgba(0, 210, 255, 0.5);
     }
+    
     div.stButton > button:hover {
-        transform: scale(1.02);
-        box-shadow: 0 4px 15px rgba(255, 75, 75, 0.4);
+        transform: translateY(-2px);
+        box-shadow: 0 0 25px rgba(0, 210, 255, 0.8);
     }
-    .stAlert { border-radius: 10px; }
+
+    /* Metrics (Big Numbers) */
+    div[data-testid="stMetricValue"] {
+        color: #00d2ff !important;
+        font-family: 'Orbitron', sans-serif;
+        text-shadow: 0 0 10px rgba(0, 210, 255, 0.3);
+    }
+
+    /* Dataframe/Table Styling */
+    div[data-testid="stDataFrame"] {
+        background-color: rgba(255, 255, 255, 0.05);
+        border-radius: 10px;
+        padding: 10px;
+    }
+
+    /* File Uploader */
+    .stFileUploader {
+        border: 1px dashed #00d2ff;
+        border-radius: 10px;
+        padding: 20px;
+        background: rgba(0, 210, 255, 0.05);
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -86,181 +145,4 @@ def get_camelot_distance(key1, key2):
     idx1 = CAMELOT_ORDER.index(key1)
     idx2 = CAMELOT_ORDER.index(key2)
     
-    num1, let1 = key1[:-1], key1[-1]
-    num2, let2 = key2[:-1], key2[-1]
-    
-    if num1 == num2 and let1 != let2: return 1 # Major/Minor Mix
-    
-    diff = abs(idx1 - idx2)
-    if diff > 12: diff = 24 - diff
-    return diff
-
-def parse_uploaded_file(uploaded_file):
-    try:
-        # Case 1: TXT / CSV
-        if uploaded_file.name.endswith('.txt') or uploaded_file.name.endswith('.csv'):
-            # Try parsing with tab delimiter first (Rekordbox TXT)
-            try:
-                df = pd.read_csv(uploaded_file, sep='\t', encoding='utf-16le')
-                if 'Key' not in df.columns and len(df.columns) <= 1:
-                    # If failed, try comma
-                    uploaded_file.seek(0)
-                    df = pd.read_csv(uploaded_file)
-            except:
-                uploaded_file.seek(0)
-                df = pd.read_csv(uploaded_file)
-
-            df.columns = [c.strip() for c in df.columns]
-            return df
-        
-        # Case 2: XML
-        elif uploaded_file.name.endswith('.xml'):
-            tree = ET.parse(uploaded_file)
-            root = tree.getroot()
-            tracks = []
-            collection = root.find('COLLECTION')
-            if collection is None: return pd.DataFrame()
-                
-            for track in collection.findall('TRACK'):
-                tracks.append({
-                    'Artist': track.get('Artist'),
-                    'Track Title': track.get('Name'),
-                    'BPM': track.get('AverageBpm'),
-                    'Key': track.get('Tonality')
-                })
-            return pd.DataFrame(tracks)
-            
-        return pd.DataFrame()
-    except Exception as e:
-        st.error(f"Error reading file: {e}")
-        return pd.DataFrame()
-
-# --- 3. The Algorithm ---
-def optimize_playlist(df, energy_mode="Ramp Up (Low -> High)"):
-    # Cleanup columns
-    df.columns = [c.strip() for c in df.columns]
-    
-    # 1. Standardize Keys (The Fix!)
-    if 'Key' not in df.columns:
-        st.error("Column 'Key' not found.")
-        return df
-        
-    # Create a new column for processing, preserving original 'Key' for display if needed
-    df['Camelot_Key'] = df['Key'].apply(standardize_key)
-    
-    # Filter valid
-    valid_df = df[df['Camelot_Key'].notna()].copy()
-    invalid_df = df[df['Camelot_Key'].isna()].copy()
-    
-    if valid_df.empty:
-        st.warning("No valid keys found. Check if your file has Key/Tonality info.")
-        return df
-
-    # Group by Camelot Key
-    groups = valid_df.groupby('Camelot_Key')
-    unique_keys = valid_df['Camelot_Key'].unique().tolist()
-    
-    # Pathfinding
-    sorted_keys = [unique_keys[0]]
-    unique_keys.remove(unique_keys[0])
-    
-    while unique_keys:
-        current_key = sorted_keys[-1]
-        best_next_key = min(unique_keys, key=lambda k: get_camelot_distance(current_key, k))
-        sorted_keys.append(best_next_key)
-        unique_keys.remove(best_next_key)
-        
-    # Construct Final List
-    final_playlist = []
-    
-    for key in sorted_keys:
-        key_group = groups.get_group(key)
-        
-        # Convert BPM to numeric for sorting
-        if 'BPM' in key_group.columns:
-            key_group['BPM'] = pd.to_numeric(key_group['BPM'], errors='coerce')
-            
-        # Sort by BPM
-        if energy_mode == "Ramp Up (Low -> High)":
-            key_group = key_group.sort_values(by='BPM', ascending=True)
-        elif energy_mode == "Ramp Down (High -> Low)":
-            key_group = key_group.sort_values(by='BPM', ascending=False)
-             
-        final_playlist.append(key_group)
-        
-    if not invalid_df.empty:
-        final_playlist.append(invalid_df)
-        
-    result = pd.concat(final_playlist)
-    
-    # Cleanup: remove the temporary column
-    result = result.drop(columns=['Camelot_Key'])
-    return result
-
-# --- 4. Main UI ---
-def main():
-    st.title("Harmonic Flow Optimizer")
-    
-    st.markdown("""
-    <div style='text-align: center; color: #888; margin-bottom: 20px;'>
-    Instantly transform your raw playlist into a seamless harmonic journey.<br>
-    Powered by the <b>Camelot Wheel</b> system for perfect key mixing.
-    </div>
-    """, unsafe_allow_html=True)
-    
-    with st.sidebar:
-        st.header("⚙️ Settings")
-        st.info("Supports **XML**, **TXT** and **CSV**.")
-        
-        energy_option = st.select_slider(
-            "Energy Flow Strategy",
-            options=["Ramp Down (High -> Low)", "Wave (Mixed)", "Ramp Up (Low -> High)"],
-            value="Ramp Up (Low -> High)"
-        )
-    
-    with st.container():
-        uploaded_file = st.file_uploader("Upload Playlist", type=['xml', 'txt', 'csv'])
-    
-    if uploaded_file:
-        df = parse_uploaded_file(uploaded_file)
-        
-        if not df.empty:
-            st.success(f"Loaded {len(df)} tracks successfully!")
-            
-            with st.expander("📂 Preview Original Playlist"):
-                st.dataframe(df.head(), use_container_width=True)
-                
-            if st.button("🚀 Optimize Magic"):
-                with st.spinner("Translating keys & Calculating harmonic paths..."):
-                    optimized_df = optimize_playlist(df, energy_mode=energy_option)
-                    
-                    st.divider()
-                    st.markdown("<h3 style='text-align: center;'>✅ Optimized Result</h3>", unsafe_allow_html=True)
-                    
-                    # Metrics
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Total Tracks", len(optimized_df))
-                    
-                    start_bpm = optimized_df.iloc[0]['BPM'] if 'BPM' in optimized_df.columns else "N/A"
-                    col2.metric("Start BPM", f"{start_bpm}")
-                    
-                    start_key = optimized_df.iloc[0]['Key'] if 'Key' in optimized_df.columns else "N/A"
-                    col3.metric("Start Key", f"{start_key}")
-                    
-                    # Result Table
-                    display_cols = ['Artist', 'Track Title', 'Key', 'BPM']
-                    display_cols = [c for c in display_cols if c in optimized_df.columns]
-                    
-                    st.dataframe(optimized_df[display_cols].reset_index(drop=True), use_container_width=True)
-                    
-                    # Download
-                    csv = optimized_df.to_csv(index=False).encode('utf-8')
-                    st.download_button(
-                        label="📥 Download Sorted CSV",
-                        data=csv,
-                        file_name="harmonic_flow_sorted.csv",
-                        mime="text/csv"
-                    )
-
-if __name__ == "__main__":
-    main()
+    num1, let1 = key1[:-1], key
